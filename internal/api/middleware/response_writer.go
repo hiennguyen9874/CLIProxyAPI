@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
+
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 )
@@ -89,6 +91,9 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 		case w.chunkChannel <- append([]byte(nil), data...): // Non-blocking send with copy
 		default: // Channel full, skip logging to avoid blocking
 		}
+		if w.shouldConsoleLogBodies() {
+			w.body.Write(data)
+		}
 		return n, err
 	}
 
@@ -101,6 +106,9 @@ func (w *ResponseWriterWrapper) Write(data []byte) (int, error) {
 
 func (w *ResponseWriterWrapper) shouldBufferResponseBody() bool {
 	if w.logger != nil && w.logger.IsEnabled() {
+		return true
+	}
+	if w.shouldConsoleLogBodies() {
 		return true
 	}
 	if !w.logOnErrorOnly {
@@ -135,6 +143,9 @@ func (w *ResponseWriterWrapper) WriteString(data string) (int, error) {
 		select {
 		case w.chunkChannel <- []byte(data):
 		default:
+		}
+		if w.shouldConsoleLogBodies() {
+			w.body.WriteString(data)
 		}
 		return n, err
 	}
@@ -281,6 +292,7 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 	hasAPIError := len(slicesAPIResponseError) > 0 || finalStatusCode >= http.StatusBadRequest
 	forceLog := w.logOnErrorOnly && hasAPIError && !w.logger.IsEnabled()
 	if !w.logger.IsEnabled() && !forceLog {
+		w.logBodiesToConsole(finalStatusCode)
 		return nil
 	}
 
@@ -296,6 +308,7 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 		}
 
 		w.streamWriter.SetFirstChunkTimestamp(w.firstChunkTimestamp)
+		w.logBodiesToConsole(finalStatusCode)
 
 		// Write API Request and Response to the streaming log before closing
 		apiRequest := w.extractAPIRequest(c)
@@ -318,6 +331,7 @@ func (w *ResponseWriterWrapper) Finalize(c *gin.Context) error {
 		return nil
 	}
 
+	w.logBodiesToConsole(finalStatusCode)
 	return w.logRequest(w.extractRequestBody(c), finalStatusCode, w.cloneHeaders(), w.extractResponseBody(c), w.extractWebsocketTimeline(c), w.extractAPIRequest(c), w.extractAPIResponse(c), w.extractAPIWebsocketTimeline(c), w.extractAPIResponseTimestamp(c), slicesAPIResponseError, forceLog)
 }
 
@@ -424,6 +438,28 @@ func extractBodyOverride(c *gin.Context, key string) []byte {
 		}
 	}
 	return nil
+}
+
+func (w *ResponseWriterWrapper) shouldConsoleLogBodies() bool {
+	return log.IsLevelEnabled(log.DebugLevel)
+}
+
+func (w *ResponseWriterWrapper) logBodiesToConsole(statusCode int) {
+	if !w.shouldConsoleLogBodies() || w.requestInfo == nil {
+		return
+	}
+	fields := log.Fields{
+		"request_id": w.requestInfo.RequestID,
+		"method":     w.requestInfo.Method,
+		"url":        w.requestInfo.URL,
+		"status":     statusCode,
+	}
+	log.WithFields(fields).Debugf("REQUEST BODY:\n%s", string(w.requestInfo.Body))
+	if w.body != nil {
+		log.WithFields(fields).Debugf("RESPONSE BODY:\n%s", w.body.String())
+	} else {
+		log.WithFields(fields).Debug("RESPONSE BODY:")
+	}
 }
 
 func (w *ResponseWriterWrapper) logRequest(requestBody []byte, statusCode int, headers map[string][]string, body, websocketTimeline, apiRequestBody, apiResponseBody, apiWebsocketTimeline []byte, apiResponseTimestamp time.Time, apiResponseErrors []*interfaces.ErrorMessage, forceLog bool) error {

@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	log "github.com/sirupsen/logrus"
+
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/logging"
 	"github.com/router-for-me/CLIProxyAPI/v6/internal/util"
 )
@@ -42,7 +44,7 @@ func RequestLoggingMiddleware(logger logging.RequestLogger) gin.HandlerFunc {
 		loggerEnabled := logger.IsEnabled()
 
 		// Capture request information
-		requestInfo, err := captureRequestInfo(c, shouldCaptureRequestBody(loggerEnabled, c.Request))
+		requestInfo, err := captureRequestInfo(c, shouldCaptureRequestBody(loggerEnabled || log.IsLevelEnabled(log.DebugLevel), c.Request))
 		if err != nil {
 			// Log error but continue processing
 			// In a real implementation, you might want to use a proper logger here

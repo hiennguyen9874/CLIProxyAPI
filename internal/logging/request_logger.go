@@ -341,6 +341,11 @@ func (l *FileRequestLogger) LogStreamingRequest(url, method string, headers map[
 	if errTemp != nil {
 		return nil, fmt.Errorf("failed to create request body temp file: %w", errTemp)
 	}
+	log.WithFields(log.Fields{
+		"request_id": requestID,
+		"path":       requestBodyPath,
+		"bytes":      len(body),
+	}).Debug("streaming request body spooled to file")
 
 	responseBodyFile, errCreate := os.CreateTemp(l.logsDir, "response-body-*.tmp")
 	if errCreate != nil {
@@ -348,6 +353,10 @@ func (l *FileRequestLogger) LogStreamingRequest(url, method string, headers map[
 		return nil, fmt.Errorf("failed to create response body temp file: %w", errCreate)
 	}
 	responseBodyPath := responseBodyFile.Name()
+	log.WithFields(log.Fields{
+		"request_id": requestID,
+		"path":       responseBodyPath,
+	}).Debug("streaming response body spool file created")
 
 	// Create streaming writer
 	writer := &FileStreamingLogWriter{
@@ -1210,6 +1219,9 @@ type FileStreamingLogWriter struct {
 
 	// apiResponseTimestamp captures when the API response was received.
 	apiResponseTimestamp time.Time
+
+	// responseBodyBytes tracks how many streaming response bytes were spooled.
+	responseBodyBytes int64
 }
 
 // WriteChunkAsync writes a response chunk asynchronously (non-blocking).
@@ -1345,6 +1357,13 @@ func (w *FileStreamingLogWriter) Close() error {
 		return fmt.Errorf("failed to create log file: %w", errOpen)
 	}
 
+	log.WithFields(log.Fields{
+		"log_path":           w.logFilePath,
+		"request_body_path":  w.requestBodyPath,
+		"response_body_path": w.responseBodyPath,
+		"response_bytes":     atomic.LoadInt64(&w.responseBodyBytes),
+	}).Debug("writing streaming request and response bodies to log file")
+
 	writeErr := w.writeFinalLog(logFile)
 	if errClose := logFile.Close(); errClose != nil {
 		log.WithError(errClose).Warn("failed to close request log file")
@@ -1366,7 +1385,11 @@ func (w *FileStreamingLogWriter) asyncWriter() {
 		if w.responseBodyFile == nil {
 			continue
 		}
-		if _, errWrite := w.responseBodyFile.Write(chunk); errWrite != nil {
+		written, errWrite := w.responseBodyFile.Write(chunk)
+		if written > 0 {
+			atomic.AddInt64(&w.responseBodyBytes, int64(written))
+		}
+		if errWrite != nil {
 			select {
 			case w.errorChan <- errWrite:
 			default:
